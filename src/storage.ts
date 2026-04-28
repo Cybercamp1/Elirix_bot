@@ -3,6 +3,8 @@ import path from 'path';
 import { WalletData } from './solana';
 
 export interface UserData {
+    username?: string;
+    password?: string;
     mainWallet?: WalletData;
     wallets: WalletData[];
     bundleSettings: {
@@ -18,7 +20,8 @@ export interface UserData {
 const STORAGE_FILE = path.join(__dirname, '..', 'users.json');
 
 export class Storage {
-    private data: Record<number, UserData> = {};
+    public data: Record<string, UserData> = {};
+    public sessions: Record<number, string> = {};
 
     constructor() {
         this.load();
@@ -28,7 +31,11 @@ export class Storage {
         if (fs.existsSync(STORAGE_FILE)) {
             try {
                 const fileContent = fs.readFileSync(STORAGE_FILE, 'utf-8');
-                this.data = JSON.parse(fileContent);
+                const parsed = JSON.parse(fileContent);
+                if (parsed.data) {
+                    this.data = parsed.data;
+                    this.sessions = parsed.sessions || {};
+                }
             } catch (error) {
                 console.error('Failed to load user data:', error);
             }
@@ -37,34 +44,60 @@ export class Storage {
 
     private save() {
         try {
-            fs.writeFileSync(STORAGE_FILE, JSON.stringify(this.data, null, 2));
+            fs.writeFileSync(STORAGE_FILE, JSON.stringify({ data: this.data, sessions: this.sessions }, null, 2));
         } catch (error) {
             console.error('Failed to save user data:', error);
         }
     }
 
-    public getUser(userId: number): UserData {
-        if (!this.data[userId]) {
-            const { generateWallets } = require('./solana');
-            this.data[userId] = {
-                mainWallet: generateWallets(1)[0],
-                wallets: [],
-                bundleSettings: {
-                    walletsToUse: 0,
-                    buyAmount: 0.1,
-                },
-                settings: {
-                    slippage: 10,
-                    priorityFee: 0.001,
-                }
-            };
-            this.save();
-        } else if (!this.data[userId].mainWallet) {
-            const { generateWallets } = require('./solana');
-            this.data[userId].mainWallet = generateWallets(1)[0];
-            this.save();
-        }
-        return this.data[userId];
+    public createAccount(username: string, password: string): boolean {
+        if (this.data[username]) return false;
+        
+        const { generateWallets } = require('./solana');
+        this.data[username] = {
+            username,
+            password,
+            mainWallet: generateWallets(1)[0],
+            wallets: [],
+            bundleSettings: {
+                walletsToUse: 0,
+                buyAmount: 0.1,
+            },
+            settings: {
+                slippage: 10,
+                priorityFee: 0.001,
+            }
+        };
+        this.save();
+        return true;
+    }
+
+    public verifyAccount(username: string, password: string): boolean {
+        const user = this.data[username];
+        if (!user) return false;
+        return user.password === password;
+    }
+
+    public login(telegramId: number, username: string) {
+        this.sessions[telegramId] = username;
+        this.save();
+    }
+
+    public logout(telegramId: number) {
+        delete this.sessions[telegramId];
+        this.save();
+    }
+
+    public getSessionUser(telegramId: number): UserData | null {
+        const username = this.sessions[telegramId];
+        if (!username) return null;
+        return this.data[username] || null;
+    }
+
+    public getUser(telegramId: number): UserData {
+        const user = this.getSessionUser(telegramId);
+        if (!user) throw new Error("User not authenticated");
+        return user;
     }
 
     public updateUser(userId: number, updateFn: (user: UserData) => void) {
